@@ -48,22 +48,39 @@ METRIC_CANONICAL_NAMES = {
     "drawdown %": "equity_drawdown_pct",
     "equity dd": "equity_dd",
     "drawdown": "drawdown",
-    "profit factor": "profit_factor",
+    "result": "result",
     "profit": "profit",
     "expected payoff": "expected_payoff",
+    "profit factor": "profit_factor",
     "recovery factor": "recovery_factor",
     "sharpe ratio": "sharpe_ratio",
     "trades": "trades",
     "win rate": "win_rate",
     "win rate %": "win_rate",
-    "result": "result",
     "custom": "custom",
+    "profit per trade": "profit_per_trade",
+    "loss per trade": "loss_per_trade",
+    "biggest win": "biggest_win",
+    "biggest loss": "biggest_loss",
+    "equity_drawdown_pct": "equity_drawdown_pct",
+    "profit_factor": "profit_factor",
+    "expected_payoff": "expected_payoff",
+    "recovery_factor": "recovery_factor",
+    "sharpe_ratio": "sharpe_ratio",
+    "win_rate": "win_rate",
+    "profit_per_trade": "profit_per_trade",
+    "loss_per_trade": "loss_per_trade",
+    "biggest_win": "biggest_win",
+    "biggest_loss": "biggest_loss",
 }
 
 METRIC_UNITS = {
     "equity_drawdown_pct": "%",
     "win_rate": "%",
 }
+
+KNOWN_METRIC_HEADERS = frozenset(METRIC_CANONICAL_NAMES)
+PASS_COLUMN_VARIANTS = frozenset({"pass", "#", "no.", "no", "id"})
 
 
 def normalize_metric_header(name: Any) -> tuple[str, str]:
@@ -84,6 +101,40 @@ def validate_unique_metric_headers(headers: list[Any]) -> None:
                 "the report contains ambiguous duplicate metrics."
             )
         seen.add(canonical)
+
+
+def classify_columns(headers: list[Any]) -> tuple[int | None, list[int], list[int]]:
+    """Classify explicit pass/metric headers; preserve all other columns as parameters."""
+    normalized = [str(header).strip().lower() for header in headers]
+    pass_columns = [
+        index for index, name in enumerate(normalized)
+        if name in PASS_COLUMN_VARIANTS
+    ]
+    if len(pass_columns) > 1:
+        raise ValueError("Multiple optimization pass columns were found.")
+
+    pass_column = pass_columns[0] if pass_columns else None
+    metric_columns = [
+        index for index, name in enumerate(normalized)
+        if index != pass_column and name in KNOWN_METRIC_HEADERS
+    ]
+    validate_unique_metric_headers([headers[index] for index in metric_columns])
+    metric_indices = set(metric_columns)
+
+    parameter_columns = [
+        index for index in range(len(headers))
+        if index != pass_column and index not in metric_indices
+    ]
+
+    parameter_names = [
+        str(headers[index]).strip().lower()
+        for index in parameter_columns
+    ]
+
+    if len(parameter_names) != len(set(parameter_names)):
+        raise ValueError("Duplicate strategy parameter column names were found.")
+
+    return pass_column, metric_columns, parameter_columns
 
 
 def normalize_timeframe(raw: object) -> tuple[str, str | None]:
