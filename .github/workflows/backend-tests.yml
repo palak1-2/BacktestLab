@@ -21,7 +21,7 @@ jobs:
         working-directory: backend
 
     env:
-      DATABASE_URL: sqlite:///:memory:
+      DATABASE_URL: 'sqlite:///:memory:'
       PYTHONPATH: .
 
     steps:
