@@ -1,0 +1,52 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local databases and database journals
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+
+# Private backtest reports and uploaded data
+data/uploads/
+data/private/
+data/hi/
+uploads/
+*.xlsx
+*.xls
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
