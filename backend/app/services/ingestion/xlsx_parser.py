@@ -7,12 +7,10 @@ MT5 XLSX structure (typical):
 - One workbook, one or more sheets
 - A header section (rows 1-N) with metadata key-value pairs
 - A data table with a header row followed by optimization pass rows
-- Parameter columns come before metric columns in the header row
-- Unknown/extra columns are preserved, never discarded
+- Explicitly recognized metric headers are metrics wherever they appear
+- Unknown/extra columns are preserved as parameters, never discarded
 
 The parser does NOT assume a fixed set of parameter names.
-Metric columns are identified by a known-metric name list but unknown
-columns are treated as metrics too (stored with unit="").
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from __future__ import annotations
 import io
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -32,46 +30,13 @@ from app.services.ingestion.base import (
     NormalizedParameter,
 )
 from app.services.ingestion.normalizer import (
+    KNOWN_METRIC_HEADERS as KNOWN_METRIC_NAMES,
+    PASS_COLUMN_VARIANTS,
+    classify_columns,
     normalize_metric_header,
     normalize_timeframe,
-    validate_unique_metric_headers,
 )
 from app.services.metrics import finite_metric_value
-
-# ---------------------------------------------------------------------------
-# Known MT5 metric column names (case-insensitive lookup).
-# Columns NOT in this set that appear after the first known-metric column
-# are still preserved as metrics.
-# ---------------------------------------------------------------------------
-
-KNOWN_METRIC_NAMES: Set[str] = {
-    "result",
-    "profit",
-    "expected payoff",
-    "profit factor",
-    "recovery factor",
-    "sharpe ratio",
-    "custom",
-    "equity dd %",
-    "equity dd",
-    "drawdown %",
-    "drawdown",
-    "trades",
-    "win rate",
-    "win rate %",
-    "profit per trade",
-    "loss per trade",
-    "biggest win",
-    "biggest loss",
-    "pass",
-}
-
-# Columns that hold the optimization pass number
-PASS_COLUMN_VARIANTS: Set[str] = {"pass", "#", "no.", "no", "id"}
-
-# Columns to skip entirely (not parameters, not metrics)
-SKIP_COLUMNS: Set[str] = {"pass", "#", "no.", "no", "id"}
-
 
 def _normalize_col_name(name: Any) -> str:
     """Lowercase strip for comparison."""
@@ -284,58 +249,24 @@ def parse_xlsx(
         raise ValueError("No data rows found after the header row.")
 
     columns = list(df.columns)
-    col_lower = [_normalize_col_name(c) for c in columns]
-
     # ------------------------------------------------------------------
-    # 5. Identify the pass column (index)
+    # 5. Classify explicit metric/pass headers independently of position
     # ------------------------------------------------------------------
-    pass_col_idx: Optional[int] = None
-    for i, cl in enumerate(col_lower):
-        if cl in PASS_COLUMN_VARIANTS:
-            pass_col_idx = i
-            break
+    pass_col_idx, metric_col_indices, param_col_indices = classify_columns(columns)
 
     if pass_col_idx is None:
         warnings.append("No 'Pass' column found; optimization_pass will be set to row index.")
 
-    # ------------------------------------------------------------------
-    # 6. Split columns into parameters vs metrics
-    #    Strategy: find the first known-metric column. Everything before
-    #    (excluding pass col) is a parameter; everything from that point on
-    #    is a metric.
-    # ------------------------------------------------------------------
-    first_metric_idx: Optional[int] = None
-    for i, cl in enumerate(col_lower):
-        if cl in KNOWN_METRIC_NAMES and cl not in PASS_COLUMN_VARIANTS:
-            first_metric_idx = i
-            break
-
-    if first_metric_idx is None:
-        # Fallback: treat last half of columns as metrics
-        warnings.append(
-            "Could not auto-detect metric columns by name. "
-            "Using column position heuristic (last 50%)."
-        )
-        first_metric_idx = max(1, len(columns) // 2)
-
-    param_col_indices: List[int] = []
-    metric_col_indices: List[int] = []
-
-    for i in range(len(columns)):
-        if i == pass_col_idx:
-            continue
-        if i < first_metric_idx:
-            param_col_indices.append(i)
-        else:
-            metric_col_indices.append(i)
-
     param_cols = [columns[i] for i in param_col_indices]
     metric_cols = [columns[i] for i in metric_col_indices]
-    validate_unique_metric_headers(metric_cols)
 
     # Warn if expected metrics are missing
     required_metric_lower = {"profit factor", "equity dd %"}
     found_metric_lower = {_normalize_col_name(c) for c in metric_cols}
+    if not metric_cols:
+        warnings.append(
+            "No recognized metric columns found; non-pass columns were preserved as parameters."
+        )
     for req in required_metric_lower:
         if req not in found_metric_lower:
             warnings.append(f"Expected metric column not found: '{req}'")

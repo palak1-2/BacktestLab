@@ -19,9 +19,13 @@ from app.services.experiments.service import save_batch
 
 
 def _xml_with_metrics(headers: list[str], values: list[str]) -> bytes:
+    return _xml_table(["Pass", *headers], ["1", *values])
+
+
+def _xml_table(headers: list[str], values: list[object]) -> bytes:
     namespace = 'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"'
 
-    def row(items: list[str]) -> str:
+    def row(items: list[object]) -> str:
         cells = "".join(
             f'<ss:Cell><ss:Data ss:Type="String">{item}</ss:Data></ss:Cell>'
             for item in items
@@ -30,7 +34,7 @@ def _xml_with_metrics(headers: list[str], values: list[str]) -> bytes:
 
     xml = (
         f'<ss:Workbook {namespace}><ss:Worksheet ss:Name="Results"><ss:Table>'
-        f'{row(["Pass", *headers])}{row(["1", *values])}'
+        f'{row(headers)}{row(values)}'
         "</ss:Table></ss:Worksheet></ss:Workbook>"
     )
     return xml.encode("utf-8")
@@ -95,6 +99,57 @@ class TestXmlMetadataExtraction:
 
 
 class TestXmlOptimizationRows:
+    def test_interleaved_columns_preserve_parameter_values_and_types(self):
+        batch = parse_xml(
+            _xml_table(
+                ["Pass", "InitialLot", "Profit Factor", "EnableFeature",
+                 "Cycle1_Lot", "Win Rate", "TargetTF"],
+                ["7", "0.25", "1.8", "true", "2.5", "65.0", "H1"],
+            ),
+            "synthetic.xml",
+        )
+        experiment = batch.experiments[0]
+        parameters = {parameter.name: parameter for parameter in experiment.parameters}
+
+        assert experiment.optimization_pass == 7
+        assert {metric.name for metric in experiment.metrics} == {"profit_factor", "win_rate"}
+        assert {name: (item.value, item.data_type) for name, item in parameters.items()} == {
+            "InitialLot": ("0.25", "float"),
+            "EnableFeature": ("true", "boolean"),
+            "Cycle1_Lot": ("2.5", "float"),
+            "TargetTF": ("H1", "string"),
+        }
+
+    def test_metrics_first_layout_keeps_following_parameters(self):
+        batch = parse_xml(
+            _xml_table(
+                ["Profit Factor", "Pass", "InpInitialLot", "Equity DD %"],
+                ["1.8", "3", "0.1", "12.5"],
+            ),
+            "synthetic.xml",
+        )
+        experiment = batch.experiments[0]
+
+        assert experiment.optimization_pass == 3
+        assert [(parameter.name, parameter.value) for parameter in experiment.parameters] == [
+            ("InpInitialLot", "0.1")
+        ]
+        assert {metric.name for metric in experiment.metrics} == {
+            "profit_factor",
+            "equity_drawdown_pct",
+        }
+
+    def test_no_known_metric_headers_are_preserved_as_parameters(self):
+        batch = parse_xml(
+            _xml_table(["Pass", "InitialLot", "TargetTF"], ["2", "0.2", "M15"]),
+            "synthetic.xml",
+        )
+        experiment = batch.experiments[0]
+
+        assert experiment.metrics == []
+        assert [parameter.name for parameter in experiment.parameters] == ["InitialLot", "TargetTF"]
+        assert any("No recognized metric columns" in warning for warning in batch.warnings)
+
     def test_parameters_detected(self):
         content = make_xml_bytes(num_rows=5)
         batch = parse_xml(content, "test.xml")
@@ -126,6 +181,19 @@ class TestXmlOptimizationRows:
         batch = parse_xml(content, "test.xml")
         warning_text = " ".join(batch.warnings).lower()
         assert "win rate" in warning_text
+
+    def test_missing_win_rate_remains_missing_and_qualification_insufficient(self, db_session):
+        batch = parse_xml(
+            _xml_table(
+                ["Pass", "Profit Factor", "Equity DD %"],
+                ["1", "2.0", "10.0"],
+            ),
+            "synthetic.xml",
+        )
+        _, statuses = save_batch(db_session, batch, "c" * 64)
+
+        assert "win_rate" not in {metric.name for metric in batch.experiments[0].metrics}
+        assert statuses["INSUFFICIENT_DATA"] == 1
 
     def test_win_rate_present_when_included(self):
         content = make_xml_bytes(num_rows=5, include_win_rate=True)
