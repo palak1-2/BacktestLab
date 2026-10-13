@@ -3,6 +3,7 @@
 import io
 from types import SimpleNamespace
 
+import openpyxl
 from fastapi.testclient import TestClient
 
 from app.models.experiment import (
@@ -368,3 +369,75 @@ def test_parameter_analysis_is_deterministic_and_does_not_change_qualification(c
     assert "parameter_analysis" in first
     assert "findings" in first and "metric_summary" in first
     assert "not causal" in first["parameter_analysis"]["interpretation"]
+
+
+def test_non_finite_metrics_are_missing_in_autopsy_and_experiment_api(client, db_session):
+    batch_id = _create_controlled_batch(
+        db_session,
+        [{
+            "metrics": {
+                "profit_factor": float("inf"),
+                "equity_drawdown_pct": float("-inf"),
+                "win_rate": float("nan"),
+            },
+        }],
+    )
+    experiment = db_session.query(Experiment).filter_by(import_batch_id=batch_id).one()
+
+    detail_response = client.get(f"/experiments/{experiment.id}")
+    evaluation_response = client.get(f"/experiments/{experiment.id}/evaluation")
+    autopsy_response = client.get(f"/research/autopsy/{batch_id}")
+
+    assert detail_response.status_code == evaluation_response.status_code == autopsy_response.status_code == 200
+    detail = detail_response.json()
+    assert all(metric["value"] is None for metric in detail["metrics"])
+    assert b"Infinity" not in detail_response.content and b"NaN" not in detail_response.content
+
+    evaluation = evaluation_response.json()
+    assert evaluation["overall_status"] == "INSUFFICIENT_DATA"
+    assert all(rule["actual_value"] is None for rule in evaluation["rules"])
+
+    autopsy = autopsy_response.json()
+    assert autopsy["status_counts"]["incomplete"] == 1
+    assert all(
+        summary["available_count"] == 0
+        and summary["missing_count"] == 1
+        and summary["min"] is None
+        and summary["median"] is None
+        and summary["max"] is None
+        for summary in autopsy["metric_summary"].values()
+    )
+    assert b"Infinity" not in autopsy_response.content and b"NaN" not in autopsy_response.content
+
+
+def test_imported_non_finite_metrics_remain_missing_through_api_and_autopsy(client):
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Optimization Results"
+    sheet.append(["Pass", "Profit Factor", "Equity DD %", "Win Rate"])
+    sheet.append([1, "Infinity", "-Infinity", "NaN"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    imported = client.post(
+        "/experiments/import",
+        files={"file": ("synthetic-invalid-metrics.xlsx", buffer.getvalue(), XLSX_MIME)},
+    )
+
+    assert imported.status_code == 200, imported.text
+    import_data = imported.json()
+    assert import_data["experiments_created"] == 1
+    assert import_data["insufficient_data"] == 1
+    assert "Non-finite metric values were treated as missing." in import_data["warnings"]
+
+    autopsy_response = client.get(
+        f"/research/autopsy/{import_data['import_batch_id']}"
+    )
+    assert autopsy_response.status_code == 200
+    autopsy = autopsy_response.json()
+    assert autopsy["status_counts"]["incomplete"] == 1
+    assert all(
+        summary["available_count"] == 0 and summary["missing_count"] == 1
+        for summary in autopsy["metric_summary"].values()
+    )
+    assert b"Infinity" not in autopsy_response.content and b"NaN" not in autopsy_response.content

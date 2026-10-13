@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from statistics import median
 from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.experiment import EvaluationStatus, Experiment, ImportBatch
 from app.services.evaluation.evaluator import evaluate_experiment
 from app.services.evaluation.rules import QUALIFICATION_RULES, FAIL
+from app.services.metrics import finite_metric_value
 
 
 ANALYSIS_METRICS = ("profit_factor", "equity_drawdown_pct", "win_rate")
@@ -44,7 +44,10 @@ FAILURE_COPY = {
 
 
 def _metric_map(experiment: Experiment) -> dict[str, float | None]:
-    return {metric.name: metric.value for metric in experiment.metrics}
+    return {
+        metric.name: finite_metric_value(metric.value)[0]
+        for metric in experiment.metrics
+    }
 
 
 def _rounded(value: float | None) -> float | None:
@@ -300,7 +303,7 @@ def build_autopsy(db: Session, import_batch_id: int) -> dict[str, Any] | None:
         status_counts[evaluation.overall_status] += 1
         for name, value in metrics.items():
             if value is not None:
-                metric_values.setdefault(name, []).append(float(value))
+                metric_values.setdefault(name, []).append(value)
 
     metric_summary = {}
     all_metric_names = sorted({m.name for exp in experiments for m in exp.metrics})
@@ -310,7 +313,7 @@ def build_autopsy(db: Session, import_batch_id: int) -> dict[str, Any] | None:
             "available_count": len(values),
             "missing_count": len(experiments) - len(values),
             "min": _rounded(min(values)) if values else None,
-            "median": _rounded(float(median(values))) if values else None,
+            "median": _rounded(_finite_median(values)) if values else None,
             "max": _rounded(max(values)) if values else None,
         }
 

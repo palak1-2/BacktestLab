@@ -31,7 +31,12 @@ from app.services.ingestion.base import (
     NormalizedMetric,
     NormalizedParameter,
 )
-from app.services.ingestion.normalizer import normalize_timeframe
+from app.services.ingestion.normalizer import (
+    normalize_metric_header,
+    normalize_timeframe,
+    validate_unique_metric_headers,
+)
+from app.services.metrics import finite_metric_value
 
 # ---------------------------------------------------------------------------
 # Known MT5 metric column names (case-insensitive lookup).
@@ -104,13 +109,8 @@ def _infer_data_type(value: Any) -> Tuple[str, str]:
 
 
 def _safe_float(value: Any) -> Optional[float]:
-    """Convert to float, returning None on failure."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
+    """Convert to a finite float, treating invalid and non-finite values as missing."""
+    return finite_metric_value(value)[0]
 
 
 def _parse_date(value: Any) -> Optional[datetime]:
@@ -331,6 +331,7 @@ def parse_xlsx(
 
     param_cols = [columns[i] for i in param_col_indices]
     metric_cols = [columns[i] for i in metric_col_indices]
+    validate_unique_metric_headers(metric_cols)
 
     # Warn if expected metrics are missing
     required_metric_lower = {"profit factor", "equity dd %"}
@@ -341,31 +342,11 @@ def parse_xlsx(
 
     if "win rate" not in found_metric_lower and "win rate %" not in found_metric_lower:
         warnings.append("Win Rate metric not found — win_rate rules will produce INSUFFICIENT_DATA")
-
-    # ------------------------------------------------------------------
-    # 7. Build metric name → canonical name mapping
-    # ------------------------------------------------------------------
-    METRIC_CANONICAL: Dict[str, str] = {
-        "equity dd %": "equity_drawdown_pct",
-        "equity dd": "equity_drawdown_pct",
-        "drawdown %": "equity_drawdown_pct",
-        "drawdown": "equity_drawdown_pct",
-        "profit factor": "profit_factor",
-        "profit": "profit",
-        "expected payoff": "expected_payoff",
-        "recovery factor": "recovery_factor",
-        "sharpe ratio": "sharpe_ratio",
-        "trades": "trades",
-        "win rate": "win_rate",
-        "win rate %": "win_rate",
-        "result": "result",
-        "custom": "custom",
-    }
-
-    METRIC_UNITS: Dict[str, str] = {
-        "equity_drawdown_pct": "%",
-        "win_rate": "%",
-    }
+    if found_metric_lower & {"equity dd", "drawdown"}:
+        warnings.append(
+            "Ambiguous drawdown values were preserved without a unit and are not used "
+            "for percentage qualification."
+        )
 
     # ------------------------------------------------------------------
     # 8. Build normalized metadata
@@ -401,6 +382,7 @@ def parse_xlsx(
     # 9. Parse rows into NormalizedExperiment objects
     # ------------------------------------------------------------------
     experiments: List[NormalizedExperiment] = []
+    non_finite_metric_seen = False
 
     for row_num, (_, row) in enumerate(df.iterrows()):
         # Optimization pass number
@@ -429,10 +411,9 @@ def parse_xlsx(
         metrics: List[NormalizedMetric] = []
         for col in metric_cols:
             raw_val = row[col]
-            float_val = _safe_float(raw_val)
-            col_lower_name = _normalize_col_name(col)
-            canonical = METRIC_CANONICAL.get(col_lower_name, col_lower_name.replace(" ", "_"))
-            unit = METRIC_UNITS.get(canonical, "")
+            float_val, non_finite = finite_metric_value(raw_val)
+            non_finite_metric_seen = non_finite_metric_seen or non_finite
+            canonical, unit = normalize_metric_header(col)
             metrics.append(NormalizedMetric(
                 name=canonical,
                 value=float_val,
@@ -447,6 +428,8 @@ def parse_xlsx(
 
     if not experiments:
         raise ValueError("No experiments could be extracted from the file.")
+    if non_finite_metric_seen:
+        warnings.append("Non-finite metric values were treated as missing.")
 
     return NormalizedExperimentBatch(
         metadata=batch_meta,

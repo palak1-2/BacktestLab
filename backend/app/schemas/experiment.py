@@ -7,11 +7,12 @@ schemas and the SQLAlchemy models via the service layer — never directly.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,18 @@ class MetricSchema(BaseModel):
     name: str
     value: Optional[float]
     unit: Optional[str]
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def non_finite_values_are_missing(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            if not math.isfinite(float(value)):
+                return None
+        except (OverflowError, TypeError, ValueError):
+            return value
+        return value
 
 
 # ---------------------------------------------------------------------------

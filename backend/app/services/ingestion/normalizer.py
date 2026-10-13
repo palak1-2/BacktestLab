@@ -7,6 +7,8 @@ This module maps them to human-readable strings and preserves the original.
 Reference: MetaTrader 5 ENUM_TIMEFRAMES
 """
 
+from typing import Any
+
 # MT5 ENUM_TIMEFRAMES integer → string mapping
 MT5_TIMEFRAME_MAP: dict[str | int, str] = {
     # Minutes
@@ -39,6 +41,49 @@ MT5_TIMEFRAME_MAP: dict[str | int, str] = {
 _STRING_ALIASES: dict[str, str] = {str(k): v for k, v in MT5_TIMEFRAME_MAP.items()}
 # Add pass-throughs for already-normalized strings
 _KNOWN_TF_STRINGS = set(MT5_TIMEFRAME_MAP.values())
+
+
+METRIC_CANONICAL_NAMES = {
+    "equity dd %": "equity_drawdown_pct",
+    "drawdown %": "equity_drawdown_pct",
+    "equity dd": "equity_dd",
+    "drawdown": "drawdown",
+    "profit factor": "profit_factor",
+    "profit": "profit",
+    "expected payoff": "expected_payoff",
+    "recovery factor": "recovery_factor",
+    "sharpe ratio": "sharpe_ratio",
+    "trades": "trades",
+    "win rate": "win_rate",
+    "win rate %": "win_rate",
+    "result": "result",
+    "custom": "custom",
+}
+
+METRIC_UNITS = {
+    "equity_drawdown_pct": "%",
+    "win_rate": "%",
+}
+
+
+def normalize_metric_header(name: Any) -> tuple[str, str]:
+    """Map exact known headers; only the explicit percent aliases map to percentage metrics."""
+    normalized = str(name).strip().lower()
+    canonical = METRIC_CANONICAL_NAMES.get(normalized, normalized.replace(" ", "_"))
+    return canonical, METRIC_UNITS.get(canonical, "")
+
+
+def validate_unique_metric_headers(headers: list[Any]) -> None:
+    """Reject source columns that would collide in the one-name-per-experiment metric table."""
+    seen: set[str] = set()
+    for header in headers:
+        canonical, _ = normalize_metric_header(header)
+        if canonical in seen:
+            raise ValueError(
+                f"Multiple metric columns normalize to '{canonical}'; "
+                "the report contains ambiguous duplicate metrics."
+            )
+        seen.add(canonical)
 
 
 def normalize_timeframe(raw: object) -> tuple[str, str | None]:

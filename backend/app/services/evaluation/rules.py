@@ -10,7 +10,9 @@ Adding a new rule requires no schema change — just add it to QUALIFICATION_RUL
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Optional
 
 
@@ -51,7 +53,12 @@ class QualificationRule:
         INSUFFICIENT_DATA is returned when actual_value is None (metric absent).
         A FAIL is always definitive — even if other metrics are missing.
         """
-        if actual_value is None:
+        if (
+            actual_value is None
+            or isinstance(actual_value, bool)
+            or not isinstance(actual_value, Real)
+            or not math.isfinite(actual_value)
+        ):
             return INSUFFICIENT_DATA
 
         ops = {

@@ -28,6 +28,7 @@ from app.models.experiment import (
 )
 from app.services.evaluation.evaluator import evaluate_experiment
 from app.services.ingestion.base import NormalizedExperimentBatch
+from app.services.metrics import finite_metric_value
 
 
 def compute_file_hash(content: bytes) -> str:
@@ -59,12 +60,21 @@ def save_batch(
     # ------------------------------------------------------------------
     source_format_val = SourceFormat(batch.metadata.source_format)
 
+    has_non_finite_metrics = any(
+        finite_metric_value(metric.value)[1]
+        for experiment in batch.experiments
+        for metric in experiment.metrics
+    )
+    batch_warnings = list(batch.warnings)
+    if has_non_finite_metrics and "Non-finite metric values were treated as missing." not in batch_warnings:
+        batch_warnings.append("Non-finite metric values were treated as missing.")
+
     import_batch = ImportBatch(
         source_file=batch.metadata.source_file,
         source_format=source_format_val,
         source_hash=source_hash,
         experiments_created=0,
-        warnings=json.dumps(batch.warnings),
+        warnings=json.dumps(batch_warnings),
     )
     db.add(import_batch)
     db.flush()  # Get import_batch.id without committing
@@ -78,7 +88,10 @@ def save_batch(
 
     for norm_exp in batch.experiments:
         # Determine evaluation status
-        metric_dict = {m.name: m.value for m in norm_exp.metrics}
+        metric_dict = {
+            metric.name: finite_metric_value(metric.value)[0]
+            for metric in norm_exp.metrics
+        }
         eval_result = evaluate_experiment(metric_dict)
         eval_status = EvaluationStatus(eval_result.overall_status)
         status_counter[eval_result.overall_status] += 1
@@ -120,7 +133,7 @@ def save_batch(
             all_metric_rows.append({
                 "experiment_id": experiment.id,
                 "name": metric.name,
-                "value": metric.value,
+                "value": finite_metric_value(metric.value)[0],
                 "unit": metric.unit,
             })
 

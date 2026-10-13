@@ -202,3 +202,36 @@ class TestOverallStatus:
         """No metrics at all → INSUFFICIENT_DATA (no FAILs to trigger REJECTED)."""
         result = evaluate_experiment({})
         assert result.overall_status == "INSUFFICIENT_DATA"
+
+    @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+    @pytest.mark.parametrize("metric", ["profit_factor", "equity_drawdown_pct", "win_rate"])
+    def test_non_finite_required_metric_is_insufficient_not_pass_or_fail(self, metric, invalid):
+        result = evaluate_experiment({
+            "profit_factor": 2.0,
+            "equity_drawdown_pct": 10.0,
+            "win_rate": 70.0,
+            metric: invalid,
+        })
+        rule = next(item for item in result.rule_results if item.rule.metric == metric)
+
+        assert rule.status == INSUFFICIENT_DATA
+        assert rule.actual_value is None
+        assert result.overall_status == "INSUFFICIENT_DATA"
+
+    @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+    @pytest.mark.parametrize("metric", ["profit_factor", "equity_drawdown_pct", "win_rate"])
+    def test_non_finite_metric_does_not_override_an_independent_valid_failure(self, metric, invalid):
+        metrics = {
+            "profit_factor": 2.0,
+            "equity_drawdown_pct": 10.0,
+            "win_rate": 70.0,
+            metric: invalid,
+        }
+        independent_failure = next(name for name in metrics if name != metric)
+        metrics[independent_failure] = {
+            "profit_factor": 1.0,
+            "equity_drawdown_pct": 30.0,
+            "win_rate": 40.0,
+        }[independent_failure]
+
+        assert evaluate_experiment(metrics).overall_status == "REJECTED"

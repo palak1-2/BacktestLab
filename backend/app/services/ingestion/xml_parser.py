@@ -49,6 +49,11 @@ from app.services.ingestion.base import (
     NormalizedParameter,
 )
 from app.services.ingestion.normalizer import normalize_timeframe
+from app.services.ingestion.normalizer import (
+    normalize_metric_header,
+    validate_unique_metric_headers,
+)
+from app.services.metrics import finite_metric_value
 
 # SpreadsheetML namespaces
 _NS = {
@@ -68,28 +73,6 @@ KNOWN_METRIC_NAMES: Set[str] = {
 }
 
 PASS_COLUMN_VARIANTS: Set[str] = {"pass", "#", "no.", "no", "id"}
-
-METRIC_CANONICAL: Dict[str, str] = {
-    "equity dd %": "equity_drawdown_pct",
-    "equity dd": "equity_drawdown_pct",
-    "drawdown %": "equity_drawdown_pct",
-    "drawdown": "equity_drawdown_pct",
-    "profit factor": "profit_factor",
-    "profit": "profit",
-    "expected payoff": "expected_payoff",
-    "recovery factor": "recovery_factor",
-    "sharpe ratio": "sharpe_ratio",
-    "trades": "trades",
-    "win rate": "win_rate",
-    "win rate %": "win_rate",
-    "result": "result",
-    "custom": "custom",
-}
-
-METRIC_UNITS: Dict[str, str] = {
-    "equity_drawdown_pct": "%",
-    "win_rate": "%",
-}
 
 _META_KEY_MAP: Dict[str, str] = {
     "symbol": "symbol",
@@ -115,12 +98,7 @@ def _ncl(name: Any) -> str:
 
 
 def _safe_float(v: Any) -> Optional[float]:
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
+    return finite_metric_value(v)[0]
 
 
 def _safe_int(v: Any) -> Optional[int]:
@@ -415,10 +393,16 @@ def parse_xml(
 
     param_cols = [header_cols[i] for i in param_col_indices]
     metric_cols = [header_cols[i] for i in metric_col_indices]
+    validate_unique_metric_headers(metric_cols)
 
     found_metric_lower = {_ncl(c) for c in metric_cols}
     if "win rate" not in found_metric_lower and "win rate %" not in found_metric_lower:
         warnings.append("Win Rate metric not found — win_rate rules will produce INSUFFICIENT_DATA")
+    if found_metric_lower & {"equity dd", "drawdown"}:
+        warnings.append(
+            "Ambiguous drawdown values were preserved without a unit and are not used "
+            "for percentage qualification."
+        )
 
     # ------------------------------------------------------------------
     # 9. Build batch metadata
@@ -449,6 +433,7 @@ def parse_xml(
     # 10. Parse data rows
     # ------------------------------------------------------------------
     experiments: List[NormalizedExperiment] = []
+    non_finite_metric_seen = False
 
     for row_num, row in enumerate(data_rows):
         # Pad short rows
@@ -485,10 +470,9 @@ def parse_xml(
             if col_i >= len(row):
                 continue
             raw_val = row[col_i]
-            float_val = _safe_float(raw_val)
-            col_lower_name = _ncl(col_name)
-            canonical = METRIC_CANONICAL.get(col_lower_name, col_lower_name.replace(" ", "_"))
-            unit = METRIC_UNITS.get(canonical, "")
+            float_val, non_finite = finite_metric_value(raw_val)
+            non_finite_metric_seen = non_finite_metric_seen or non_finite
+            canonical, unit = normalize_metric_header(col_name)
             metrics.append(NormalizedMetric(
                 name=canonical,
                 value=float_val,
@@ -503,6 +487,8 @@ def parse_xml(
 
     if not experiments:
         raise ValueError("No experiments could be extracted from the XML file.")
+    if non_finite_metric_seen:
+        warnings.append("Non-finite metric values were treated as missing.")
 
     return NormalizedExperimentBatch(
         metadata=batch_meta,

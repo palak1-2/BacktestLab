@@ -23,6 +23,7 @@ from app.services.evaluation.rules import (
     QUALIFICATION_RULES,
     QualificationRule,
 )
+from app.services.metrics import finite_metric_value
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ def evaluate_experiment(metrics: Dict[str, Optional[float]]) -> EvaluationResult
     any_insufficient = False
 
     for rule in QUALIFICATION_RULES:
-        actual = metrics.get(rule.metric)  # None if metric absent
+        actual, _ = finite_metric_value(metrics.get(rule.metric))
         status = rule.evaluate(actual)
 
         if rule.required:
