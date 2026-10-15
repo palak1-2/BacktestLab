@@ -107,7 +107,7 @@ def _parse_deposit(value: Any) -> Optional[float]:
 
 def _safe_int(v: Any) -> Optional[int]:
     f = _safe_float(v)
-    if f is None:
+    if f is None or not f.is_integer():
         return None
     return int(f)
 

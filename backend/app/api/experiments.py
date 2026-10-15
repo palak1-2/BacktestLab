@@ -42,6 +42,11 @@ from app.services.experiments.service import (
     save_batch,
 )
 from app.services.ingestion.xlsx_parser import parse_xlsx
+from app.services.ingestion.winrate_csv import (
+    enrich_xml_batch_with_winrate,
+    paired_import_hash,
+    pairing_provenance,
+)
 from app.services.ingestion.xml_parser import parse_xml
 
 router = APIRouter()
@@ -69,6 +74,7 @@ def health() -> HealthSchema:
 @router.post("/experiments/import", response_model=ImportResponseSchema, tags=["experiments"])
 async def import_experiments(
     file: UploadFile = File(...),
+    winrate_csv: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ) -> ImportResponseSchema:
     """
@@ -95,11 +101,16 @@ async def import_experiments(
             status_code=415,
             detail=f"Unsupported file type '{ext}'. Only .xlsx and .xml are accepted.",
         )
+    if winrate_csv is not None and (not is_xml or is_xlsx):
+        raise HTTPException(
+            status_code=422,
+            detail="The winrate_csv companion is only supported with an XML report.",
+        )
 
     # ------------------------------------------------------------------
     # Read file bytes
     # ------------------------------------------------------------------
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
 
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
@@ -109,10 +120,29 @@ async def import_experiments(
             detail=f"File too large. Maximum size is {MAX_UPLOAD_MB} MB.",
         )
 
+    companion_content: Optional[bytes] = None
+    if winrate_csv is not None:
+        companion_content = await winrate_csv.read(MAX_UPLOAD_BYTES + 1)
+        if not companion_content:
+            raise HTTPException(status_code=400, detail="Uploaded winrate_csv is empty.")
+        if len(companion_content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Companion CSV too large. Maximum size is {MAX_UPLOAD_MB} MB.",
+            )
+
     # ------------------------------------------------------------------
     # Deduplication check
     # ------------------------------------------------------------------
-    source_hash = compute_file_hash(content)
+    xml_hash = compute_file_hash(content)
+    companion_hash = (
+        compute_file_hash(companion_content) if companion_content is not None else None
+    )
+    if companion_content is None:
+        source_hash = xml_hash
+    else:
+        assert companion_hash is not None
+        source_hash = paired_import_hash(xml_hash, companion_hash)
     existing = is_duplicate(db, source_hash)
     if existing:
         return ImportResponseSchema(
@@ -147,12 +177,26 @@ async def import_experiments(
             detail=f"Unexpected parsing error: {exc}",
         )
 
+    if companion_content is not None:
+        try:
+            enrich_xml_batch_with_winrate(batch, companion_content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        assert companion_hash is not None
+        batch.warnings = [
+            warning
+            for warning in batch.warnings
+            if warning != "Win Rate metric not found — win_rate rules will produce INSUFFICIENT_DATA"
+        ]
+        batch.warnings.append(pairing_provenance(xml_hash, companion_hash))
+
     # ------------------------------------------------------------------
     # Persist + evaluate
     # ------------------------------------------------------------------
     try:
         import_batch, status_counts = save_batch(db, batch, source_hash)
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=500,
             detail=f"Database error during import: {exc}",
