@@ -9,6 +9,7 @@ Verifies:
 """
 
 import json
+from xml.sax.saxutils import escape
 
 import pytest
 
@@ -22,8 +23,14 @@ def _xml_with_metrics(headers: list[str], values: list[str]) -> bytes:
     return _xml_table(["Pass", *headers], ["1", *values])
 
 
-def _xml_table(headers: list[str], values: list[object]) -> bytes:
+def _xml_table(
+    headers: list[str],
+    values: list[object],
+    document_properties: dict[str, str] | None = None,
+    worksheet_metadata: list[tuple[str, str]] | None = None,
+) -> bytes:
     namespace = 'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"'
+    office_namespace = 'xmlns:o="urn:schemas-microsoft-com:office:office"'
 
     def row(items: list[object]) -> str:
         cells = "".join(
@@ -32,9 +39,18 @@ def _xml_table(headers: list[str], values: list[object]) -> bytes:
         )
         return f"<ss:Row>{cells}</ss:Row>"
 
+    properties = ""
+    if document_properties is not None:
+        properties = "<o:DocumentProperties>" + "".join(
+            f"<o:{name}>{escape(value)}</o:{name}>"
+            for name, value in document_properties.items()
+        ) + "</o:DocumentProperties>"
+
+    metadata_rows = "".join(row([key, value]) for key, value in (worksheet_metadata or []))
     xml = (
-        f'<ss:Workbook {namespace}><ss:Worksheet ss:Name="Results"><ss:Table>'
-        f'{row(headers)}{row(values)}'
+        f'<ss:Workbook {namespace} {office_namespace}>'
+        f'{properties}<ss:Worksheet ss:Name="Results"><ss:Table>'
+        f'{metadata_rows}{row(headers)}{row(values)}'
         "</ss:Table></ss:Worksheet></ss:Workbook>"
     )
     return xml.encode("utf-8")
@@ -65,6 +81,98 @@ class TestXmlBasicLoad:
 
 
 class TestXmlMetadataExtraction:
+    def test_namespaced_document_properties_merge_into_batch_metadata(self):
+        batch = parse_xml(
+            _xml_table(
+                ["Pass", "InitialLot", "Profit Factor"],
+                ["1", "0.25", "1.8"],
+                document_properties={
+                    "Title": "ReportOptimizer TestEA",
+                    "Server": "Broker-Server",
+                    "Deposit": "10000 USD",
+                    "Leverage": "1:100",
+                    "Build": "4150",
+                },
+            ),
+            "synthetic.xml",
+        )
+
+        assert batch.metadata.strategy_name == "ReportOptimizer TestEA"
+        assert batch.metadata.server == "Broker-Server"
+        assert batch.metadata.deposit == 10000.0
+        assert batch.metadata.leverage == "1:100"
+        assert batch.metadata.mt5_build == "4150"
+        assert [(p.name, p.value) for p in batch.experiments[0].parameters] == [
+            ("InitialLot", "0.25")
+        ]
+        assert [(m.name, m.value) for m in batch.experiments[0].metrics] == [
+            ("profit_factor", 1.8)
+        ]
+
+    def test_worksheet_metadata_takes_precedence_over_document_properties(self):
+        batch = parse_xml(
+            _xml_table(
+                ["Pass", "Profit Factor"],
+                ["1", "1.8"],
+                document_properties={
+                    "Server": "Properties-Server",
+                    "Deposit": "10000 USD",
+                    "Leverage": "1:100",
+                    "Build": "4150",
+                },
+                worksheet_metadata=[
+                    ("Server", "Worksheet-Server"),
+                    ("Deposit", "25000 EUR"),
+                    ("Leverage", "1:200"),
+                    ("Build", "4200"),
+                ],
+            ),
+            "synthetic.xml",
+        )
+
+        assert batch.metadata.server == "Worksheet-Server"
+        assert batch.metadata.deposit == 25000.0
+        assert batch.metadata.leverage == "1:200"
+        assert batch.metadata.mt5_build == "4200"
+
+    def test_missing_optional_document_properties_remain_missing(self):
+        batch = parse_xml(
+            _xml_table(["Pass", "Profit Factor"], ["1", "1.8"]),
+            "synthetic.xml",
+        )
+
+        assert batch.metadata.server is None
+        assert batch.metadata.deposit is None
+        assert batch.metadata.leverage is None
+        assert batch.metadata.mt5_build is None
+        assert len(batch.experiments) == 1
+
+    @pytest.mark.parametrize("invalid_deposit", ["not an amount", "NaN", "Infinity", "10000 USD extra"])
+    def test_invalid_document_property_deposit_is_ignored(self, invalid_deposit):
+        batch = parse_xml(
+            _xml_table(
+                ["Pass", "InitialLot", "Profit Factor"],
+                ["1", "0.25", "1.8"],
+                document_properties={
+                    "Server": "Broker-Server",
+                    "Deposit": invalid_deposit,
+                    "Leverage": "1:100",
+                    "Build": "4150",
+                },
+            ),
+            "synthetic.xml",
+        )
+
+        assert batch.metadata.deposit is None
+        assert "Invalid deposit metadata was ignored." in batch.warnings
+        assert batch.metadata.server == "Broker-Server"
+        assert batch.metadata.leverage == "1:100"
+        assert batch.metadata.mt5_build == "4150"
+        assert [parameter.name for parameter in batch.experiments[0].parameters] == ["InitialLot"]
+        assert [(metric.name, metric.value) for metric in batch.experiments[0].metrics] == [
+            ("profit_factor", 1.8)
+        ]
+
     def test_symbol_extracted(self):
         content = make_xml_bytes(num_rows=3)
         batch = parse_xml(content, "test.xml")

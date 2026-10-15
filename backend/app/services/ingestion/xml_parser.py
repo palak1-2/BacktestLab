@@ -92,6 +92,19 @@ def _safe_float(v: Any) -> Optional[float]:
     return finite_metric_value(v)[0]
 
 
+def _parse_deposit(value: Any) -> Optional[float]:
+    """Parse a finite amount optionally followed by a currency code."""
+    if value is None:
+        return None
+    match = re.fullmatch(
+        r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?:[A-Za-z]{3})?\s*",
+        str(value),
+    )
+    if match is None:
+        return None
+    return _safe_float(match.group(1))
+
+
 def _safe_int(v: Any) -> Optional[int]:
     f = _safe_float(v)
     if f is None:
@@ -200,6 +213,10 @@ def _extract_doc_properties(root: Any) -> Dict[str, Any]:
         "Author": "author",
         "Created": "created",
         "Description": "description",
+        "Server": "server",
+        "Deposit": "deposit",
+        "Leverage": "leverage",
+        "Build": "mt5_build",
     }
     for xml_field, py_field in field_map.items():
         el = dp.find(_ns(xml_field, prefix="o"))
@@ -323,6 +340,10 @@ def parse_xml(
     raw_metadata, header_row_idx = _extract_metadata_from_rows(rows)
 
     # Supplement with DocumentProperties
+    for field in ("server", "deposit", "leverage", "mt5_build"):
+        if not raw_metadata.get(field) and doc_props.get(field):
+            raw_metadata[field] = doc_props[field]
+
     if title and not raw_metadata.get("strategy_name"):
         # Try to extract EA name from title like "ReportOptimizer MyEA EURUSD H1"
         raw_metadata.setdefault("strategy_name", title)
@@ -374,7 +395,10 @@ def parse_xml(
     raw_tf = raw_metadata.get("timeframe") or raw_metadata.get("period")
     raw_tf_str, norm_tf = normalize_timeframe(raw_tf) if raw_tf else (None, None)
 
-    deposit_val = _safe_float(raw_metadata.get("deposit"))
+    deposit_raw = raw_metadata.get("deposit")
+    deposit_val = _parse_deposit(deposit_raw)
+    if deposit_raw and deposit_val is None:
+        warnings.append("Invalid deposit metadata was ignored.")
     test_start = _parse_date(str(raw_metadata.get("test_start", "") or ""))
     test_end = _parse_date(str(raw_metadata.get("test_end", "") or ""))
 
