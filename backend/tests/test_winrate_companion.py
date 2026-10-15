@@ -145,6 +145,15 @@ class TestWinRateCompanionImport:
         assert rates == {0: 65.0, 1: 60.0, 2: 70.0, 3: 80.0, 4: 50.0}
         assert "Paired XML/Win Rate CSV enrichment v1" in db_session.query(ImportBatch).one().warnings
         assert "companion CSV SHA-256=" in db_session.query(ImportBatch).one().warnings
+        autopsy_response = client.get(
+            f"/research/autopsy/{payload['import_batch_id']}"
+        )
+        assert autopsy_response.status_code == 200, autopsy_response.text
+
+        autopsy = autopsy_response.json()
+        assert autopsy["status_counts"]["qualified"] == 3
+        assert autopsy["status_counts"]["rejected"] == 2
+        assert autopsy["status_counts"]["incomplete"] == 0
 
     def test_order_independent_and_allows_additional_csv_parameters(self, client):
         rows = list(csv.reader(io.StringIO(_csv_text().decode())))
