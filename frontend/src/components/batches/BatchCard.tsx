@@ -85,13 +85,14 @@ export const BatchCard: React.FC<BatchCardProps> = ({ batch }) => {
           </Button>
 
           <Button
-            variant="primary"
-            size="sm"
-            onClick={() => navigate(`/autopsy/${batch.id}`)}
-            icon={<Activity className="w-3.5 h-3.5" />}
-          >
-            Research Autopsy
-            <ArrowRight className="w-3 h-3" />
+          variant="primary"
+          size="sm"
+          className="whitespace-nowrap"
+          onClick={() => navigate(`/autopsy/${batch.id}`)}
+          icon={<Activity className="w-3.5 h-3.5" />}
+        >
+          Research Autopsy
+          <ArrowRight className="inline-block w-3 h-3 ml-1 align-middle shrink-0" />
           </Button>
         </div>
       </div>
