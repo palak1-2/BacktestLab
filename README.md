@@ -13,6 +13,7 @@ A MetaTrader 5 researcher running hundreds or thousands of optimization passes f
 **Backtest Research Manager** turns raw MT5 optimization exports into structured, queryable experiment records and deterministically evaluates them against research qualification rules.
 
 It is a **research record-keeping system**. The researcher asks:
+
 - "Is this logic really working?"
 - "Does this EA require further changes?"
 - "Is this parameter set worth keeping or discarding?"
@@ -24,7 +25,7 @@ The software provides verifiable evidence from stored experiments. It does not a
 ## Architecture
 
 ```
-MT5 Export (XLSX / XML)
+MT5 Export (XLSX / XML + optional XML companion CSV)
         │
         ▼
   ┌─────────────┐
@@ -71,14 +72,15 @@ BacktestLab/
 │   │       │   ├── base.py         # NormalizedExperimentBatch dataclasses
 │   │       │   ├── xlsx_parser.py  # MT5 XLSX parser
 │   │       │   ├── xml_parser.py   # MT5 SpreadsheetML XML parser
+│   │       │   ├── winrate_csv.py  # Validated XML companion enrichment
 │   │       │   └── normalizer.py   # Timeframe normalization
 │   │       ├── evaluation/
 │   │       │   ├── rules.py        # QualificationRule definitions
 │   │       │   └── evaluator.py    # Deterministic evaluation engine
 │   │       └── experiments/
 │   │           ├── service.py      # DB persistence + query layer
-│           ├── autopsy.py      # Deterministic findings and parameter analysis
-│           └── gemma.py        # Optional bounded local Ollama interpretation
+│   │           ├── autopsy.py      # Deterministic findings and parameter analysis
+│   │           └── gemma.py        # Optional bounded local Ollama interpretation
 │   ├── tests/
 │   │   ├── conftest.py
 │   │   ├── test_xlsx_ingestion.py
@@ -89,7 +91,6 @@ BacktestLab/
 │   └── pytest.ini
 ├── data/
 │   └── sample/              # Place your MT5 export files here
-├── docs/
 └── README.md
 ```
 
@@ -97,17 +98,17 @@ BacktestLab/
 
 ## Technology Stack
 
-| Layer | Technology |
-|---|---|
-| Language | Python 3.11+ |
-| API Framework | FastAPI |
-| ORM | SQLAlchemy 2.x |
-| Validation | Pydantic v2 |
-| Data parsing | Pandas + openpyxl |
-| XML parsing | lxml (fallback: stdlib ElementTree) |
-| Database (local) | SQLite |
+| Layer                 | Technology                              |
+| --------------------- | --------------------------------------- |
+| Language              | Python 3.11+                            |
+| API Framework         | FastAPI                                 |
+| ORM                   | SQLAlchemy 2.x                          |
+| Validation            | Pydantic v2                             |
+| Data parsing          | Pandas + openpyxl                       |
+| XML parsing           | lxml (fallback: stdlib ElementTree)     |
+| Database (local)      | SQLite                                  |
 | Database (production) | PostgreSQL (change `DATABASE_URL` only) |
-| Testing | Pytest |
+| Testing               | Pytest                                  |
 
 ---
 
@@ -143,6 +144,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The API will be available at:
+
 - **API Base**: http://localhost:8000
 - **Interactive docs**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
@@ -219,6 +221,8 @@ curl "http://localhost:8000/research/autopsy/1?include_ai=true"
 
 The additive `ai_interpretation` result has `status` set to `success`, `unavailable`, or `error`. On unavailable Ollama/model or invalid model output, the endpoint still returns the deterministic report and a concise safe reason. The local model receives a bounded JSON summary—not raw uploaded reports or full experiment rows. Prose is validated and cannot override Python-generated findings, counts, or qualification. AI interpretations are research hypotheses only, not causal proof, predictions, or trading advice. The integration sends requests only to the configured local Ollama service; it does not call a hosted AI provider. Use a locally installed model rather than a cloud-backed model.
 
+The optional AI integration is **experimental**. In local testing, Gemma sometimes generated unsupported or incorrect claims and failed the schema/evidence checks. These outputs are rejected, and the deterministic report remains available. Passing structural validation alone does not prove that every model-generated statement is factually correct.
+
 On success, `ai_interpretation.interpretation` contains `summary`, evidence-linked `observations`, evidence-linked `follow_up_questions`, `referenced_finding_ids`, and `limitations`. Observation and question references are restricted to finding and experiment IDs included in the bounded context. Any evidence-list or context truncation is marked explicitly; omitted evidence is not represented as exhaustive.
 
 ## Importing an MT5 Report
@@ -235,7 +239,21 @@ curl -X POST http://localhost:8000/experiments/import \
   -F "file=@/path/to/your/ReportOptimizer-253459831.xml"
 ```
 
+### Paired XML + Win Rate CSV import
+
+When an XML optimization export does not contain Win Rate, an optional companion CSV can supply it. The companion must correspond to the **same optimization run** and cover exactly the XML pass IDs; a CSV from a different or partial run is rejected.
+
+```bash
+curl -X POST http://localhost:8000/experiments/import \
+  -F "file=@/path/to/ReportOptimizer.xml" \
+  -F "winrate_csv=@/path/to/mt5_winrate_poc.csv"
+```
+
+The CSV must be UTF-8 with these headers: `pass`, `profitable_trades`, `total_trades`, `win_rate_pct`, `frame_status`, `parameter_values`. `parameter_values` contains JSON mapping parameter names to string values. Validation checks pass coverage, duplicate IDs, valid frame status, positive trade totals, consistent trade counts and percentages, and agreement with the XML parameters. Invalid pairings are rejected; no partial enrichment is silently accepted. The companion field is **not supported with XLSX**.
+
 ### Example Response
+
+The following response is illustrative, not a measured import result.
 
 ```json
 {
@@ -270,11 +288,11 @@ curl http://localhost:8000/health
 
 ### `POST /experiments/import`
 
-Upload an MT5 optimization report.
+Upload an MT5 optimization report in the multipart `file` field. An optional `winrate_csv` field is accepted only with XML reports; see the paired import example above.
 
 **Accepted formats**: `.xlsx`, `.xml`
 
-**Deduplication**: If the same file is uploaded twice (SHA-256 match), the API returns `"imported": false, "duplicate": true` with the original `import_batch_id` — no data is duplicated.
+**Deduplication**: A standalone report is identified by its SHA-256 hash; a paired import uses the identities of both the XML and companion CSV. Reimporting the same input returns `"imported": false, "duplicate": true` with the original `import_batch_id` rather than duplicating records. Hashes do not imply that original upload bytes are retained.
 
 ---
 
@@ -284,15 +302,15 @@ List experiments with optional filters and pagination.
 
 **Query parameters:**
 
-| Parameter | Type | Description |
-|---|---|---|
-| `strategy_name` | string | Partial name match |
-| `symbol` | string | Partial symbol match (e.g. `EURUSD`) |
-| `timeframe` | string | Exact normalized timeframe (e.g. `H1`) |
-| `experiment_type` | string | `discovery` or `validation` |
+| Parameter           | Type   | Description                                             |
+| ------------------- | ------ | ------------------------------------------------------- |
+| `strategy_name`     | string | Partial name match                                      |
+| `symbol`            | string | Partial symbol match (e.g. `EURUSD`)                    |
+| `timeframe`         | string | Exact normalized timeframe (e.g. `H1`)                  |
+| `experiment_type`   | string | `discovery` or `validation`                             |
 | `evaluation_status` | string | `QUALIFIED`, `REJECTED`, `INSUFFICIENT_DATA`, `PENDING` |
-| `page` | int | Page number (default: 1) |
-| `page_size` | int | Results per page (default: 50, max: 500) |
+| `page`              | int    | Page number (default: 1)                                |
+| `page_size`         | int    | Results per page (default: 50, max: 500)                |
 
 ```bash
 curl "http://localhost:8000/experiments?symbol=EURUSD&evaluation_status=QUALIFIED&page=1&page_size=20"
@@ -358,27 +376,27 @@ curl http://localhost:8000/experiments/42/evaluation
 
 The MVP implements three hard deterministic rules:
 
-| Rule | Metric | Operator | Threshold |
-|---|---|---|---|
-| Profit Factor | `profit_factor` | `>` | 1.5 |
-| Drawdown | `equity_drawdown_pct` | `<` | 25% |
-| Win Rate | `win_rate` | `>` | 60% |
+| Rule          | Metric                | Operator | Threshold |
+| ------------- | --------------------- | -------- | --------- |
+| Profit Factor | `profit_factor`       | `>`      | 1.5       |
+| Drawdown      | `equity_drawdown_pct` | `<`      | 25%       |
+| Win Rate      | `win_rate`            | `>`      | 60%       |
 
 Rules are defined in [`backend/app/services/evaluation/rules.py`](backend/app/services/evaluation/rules.py).
 
 ### Overall Status
 
-| Condition | Status |
-|---|---|
-| All required rules PASS | `QUALIFIED` |
-| At least one required rule FAILS | `REJECTED` |
+| Condition                                                 | Status              |
+| --------------------------------------------------------- | ------------------- |
+| All required rules PASS                                   | `QUALIFIED`         |
+| At least one required rule FAILS                          | `REJECTED`          |
 | No FAIL, but one or more required rules have missing data | `INSUFFICIENT_DATA` |
 
 ---
 
 ## Understanding INSUFFICIENT_DATA
 
-MT5 exports do not always include every possible metric. The current real-world exports **do not contain a Win Rate column**.
+MT5 exports do not always include every possible metric. Some tested MT5 optimization exports **do not contain a Win Rate column**. A valid XML + companion CSV import can provide the missing Win Rate values.
 
 When Win Rate is missing:
 
@@ -389,14 +407,16 @@ When Win Rate is missing:
 This is intentional: the system records what is known and honestly reports what is unknown.
 
 **Example:**
+
 - Profit Factor = 2.1 → PASS
 - Drawdown = 12% → PASS
-- Win Rate = *missing* → INSUFFICIENT_DATA
+- Win Rate = _missing_ → INSUFFICIENT_DATA
 - **Overall → INSUFFICIENT_DATA**
 
 The researcher can then decide whether to seek additional data or apply judgment.
 
 **Important:** A definitive FAIL always overrides INSUFFICIENT_DATA:
+
 - Profit Factor FAIL + Win Rate missing → **REJECTED** (not INSUFFICIENT_DATA)
 
 ---
@@ -420,6 +440,11 @@ XML exports such as `ReportOptimizer-253459831.xml`.
 - Extracts `DocumentProperties` (title, author, created)
 - Supports sparse cells with `ss:Index`
 - Same normalization pipeline as XLSX
+- Can be paired with a validated Win Rate companion CSV from the same optimization run
+
+### Optional Win Rate companion CSV (`.csv`)
+
+This is **not** a standalone import format. Supply it as `winrate_csv` alongside an XML report. The CSV must have matching pass IDs and parameter values, and internally consistent frame status, trade counts, and Win Rate percentages.
 
 ---
 
@@ -427,12 +452,12 @@ XML exports such as `ReportOptimizer-253459831.xml`.
 
 MT5 may export timeframes as numeric constants. These are normalized:
 
-| Raw Value | Normalized |
-|---|---|
-| `16385` | `H1` |
-| `16388` | `H4` |
-| `16408` | `D1` |
-| `M15` | `M15` (passed through) |
+| Raw Value | Normalized             |
+| --------- | ---------------------- |
+| `16385`   | `H1`                   |
+| `16388`   | `H4`                   |
+| `16408`   | `D1`                   |
+| `M15`     | `M15` (passed through) |
 
 The original raw value is always preserved in `raw_timeframe`.
 
@@ -441,23 +466,27 @@ The original raw value is always preserved in `raw_timeframe`.
 ## Project Roadmap
 
 ### MVP (current)
+
 - [x] MT5 XLSX ingestion
 - [x] MT5 XML ingestion
+- [x] Validated paired XML + Win Rate CSV enrichment
 - [x] Dynamic parameter storage (EAV)
 - [x] Dynamic metric storage (EAV)
 - [x] Deterministic qualification engine
 - [x] REST API
 - [x] Duplicate detection (SHA-256)
 - [x] Automated tests
+- [x] Deterministic, evidence-linked Research Autopsy
+- [x] Optional local Ollama/Gemma integration (experimental; invalid outputs safely rejected)
 
 ### Planned
+
 - [ ] Frontend web interface
 - [ ] PostgreSQL deployment support
 - [ ] Experiment comparison views
 - [ ] Strategy version tracking
 - [ ] Candidate / Validation workflow
 - [ ] Authentication
-- [x] Optional local Ollama/Gemma Research Autopsy interpretation (Python remains source of truth)
 - [ ] Vector search for similar experiments
 - [ ] Detailed analytics and charts
 
