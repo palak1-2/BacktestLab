@@ -19,6 +19,7 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 MAX_TIMEOUT_SECONDS = 180.0
 MAX_CONTEXT_BYTES = 24_000
 MAX_RESPONSE_CHARS = 8_000
+MAX_HTTP_RESPONSE_BYTES = 1_048_576
 MAX_FINDINGS = 10
 MAX_PARAMETERS = 6
 MAX_GROUPS_PER_PARAMETER = 5
@@ -507,7 +508,7 @@ def generate_interpretation(autopsy: dict[str, Any]) -> AIResult:
             "status": "unavailable",
             "reason": "Local Ollama returned an unsuccessful response; verify the configured model is available.",
         }
-    if len(response.content) > MAX_RESPONSE_CHARS + 4_096:
+    if len(response.content) > MAX_HTTP_RESPONSE_BYTES:
         return {"status": "error", "reason": "Local Ollama response exceeded the allowed size."}
 
     try:

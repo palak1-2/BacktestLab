@@ -125,7 +125,6 @@ def test_valid_structured_response_is_validated_and_local_request_configured(mon
     assert requests[0]["timeout"] == gemma.DEFAULT_TIMEOUT_SECONDS
     assert requests[0]["trust_env"] is False
 
-
 @pytest.mark.parametrize(
     ("exception", "expected_reason"),
     [
@@ -228,7 +227,7 @@ def test_invalid_or_unsupported_model_outputs_are_rejected(monkeypatch, model_ou
 
 def test_oversized_ollama_http_body_is_rejected(monkeypatch):
     response = _ollama_response({"response": _valid_interpretation()})
-    response._content = b"x" * (gemma.MAX_RESPONSE_CHARS + 4_097)
+    response._content = b"x" * (gemma.MAX_HTTP_RESPONSE_BYTES + 1)
     monkeypatch.setattr(gemma.httpx, "post", lambda *args, **kwargs: response)
 
     result = gemma.generate_interpretation(_autopsy())
@@ -236,6 +235,40 @@ def test_oversized_ollama_http_body_is_rejected(monkeypatch):
     assert result == {
         "status": "error",
         "reason": "Local Ollama response exceeded the allowed size.",
+    }
+
+
+def test_large_ollama_metadata_envelope_is_accepted_with_valid_interpretation(monkeypatch):
+    interpretation = json.dumps(_valid_interpretation())
+    body = {
+        "response": interpretation,
+        "context": list(range(5_000)),
+        "model": "gemma3:4b",
+        "done": True,
+    }
+    response = _ollama_response(body)
+    assert 22_137 < len(response.content) < gemma.MAX_HTTP_RESPONSE_BYTES
+    monkeypatch.setattr(gemma.httpx, "post", lambda *args, **kwargs: response)
+
+    result = gemma.generate_interpretation(_autopsy())
+
+    assert result["status"] == "success"
+    assert result["interpretation"] == _valid_interpretation()
+
+
+def test_generated_interpretation_over_character_limit_is_rejected(monkeypatch):
+    too_long = {**_valid_interpretation(), "summary": "x" * 8_001}
+    monkeypatch.setattr(
+        gemma.httpx,
+        "post",
+        lambda *args, **kwargs: _ollama_response({"response": json.dumps(too_long)}),
+    )
+
+    result = gemma.generate_interpretation(_autopsy())
+
+    assert result == {
+        "status": "error",
+        "reason": "Local model output was missing or exceeded the allowed size.",
     }
 
 
