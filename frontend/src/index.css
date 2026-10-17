@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  --color-charcoal: #111317;
+  --color-surface: #1D2024;
+  --color-surface-subtle: #16181C;
+  --color-border: #35383C;
+  --color-border-subtle: #24272B;
+  --color-ivory: #E8E5DC;
+  --color-ivory-muted: #A6A8AB;
+  --color-amber-accent: #D5A35D;
+  --color-amber-subtle: rgba(213, 163, 93, 0.12);
+  --color-amber-hover: #E2B36E;
+
+  --font-serif: 'Newsreader', Georgia, Cambria, 'Times New Roman', serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: #111317;
+    color: #E8E5DC;
+    overflow-x: hidden;
+  }
+
+  /* Custom refined scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #111317;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2A2D32;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3A3E44;
+  }
+}
+
+/* Editorial Studio Surface Styles */
+.surface-card {
+  background-color: #1D2024;
+  border: 1px solid #35383C;
+}
+
+.surface-hover:hover {
+  background-color: #23272D;
+  border-color: #4A4F56;
+}
+
+.surface-subtle {
+  background-color: #16181C;
+  border: 1px solid #282B2F;
+}
+
+.table-header {
+  background-color: #16181C;
+  border-bottom: 1px solid #35383C;
+}
+
+.badge-base {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Subtle editorial accents */
+.editorial-rule {
+  height: 1px;
+  background: linear-gradient(90deg, #D5A35D 0%, rgba(213, 163, 93, 0.2) 60%, transparent 100%);
+}
+
+.editorial-divider {
+  border-color: #35383C;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
