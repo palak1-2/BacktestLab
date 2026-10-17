@@ -11,6 +11,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -23,7 +24,9 @@ from app.schemas.experiment import (
     ExperimentDetailSchema,
     ExperimentTypeSchema,
     HealthSchema,
+    ImportBatchSummarySchema,
     ImportResponseSchema,
+    PaginatedImportBatchesSchema,
     PaginatedExperimentsSchema,
     RuleResultSchema,
     SourceFormatSchema,
@@ -36,6 +39,7 @@ from app.services.experiments.autopsy import build_autopsy
 from app.services.experiments.gemma import generate_interpretation
 from app.services.experiments.service import (
     compute_file_hash,
+    get_import_batches,
     get_experiment_by_id,
     get_experiments,
     is_duplicate,
@@ -53,6 +57,16 @@ router = APIRouter()
 
 MAX_UPLOAD_MB = 50
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+
+def _batch_warnings(raw_warnings: Optional[str]) -> list[str]:
+    if not raw_warnings:
+        return []
+    try:
+        parsed = json.loads(raw_warnings)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed) else []
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +265,36 @@ def get_research_autopsy(
 # ---------------------------------------------------------------------------
 
 
+@router.get(
+    "/import-batches",
+    response_model=PaginatedImportBatchesSchema,
+    tags=["experiments"],
+)
+def list_import_batches(
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(50, ge=1, le=500, description="Results per page"),
+    db: Session = Depends(get_db),
+) -> PaginatedImportBatchesSchema:
+    """List import batches newest first with parsed warning metadata."""
+    total, batches = get_import_batches(db, page=page, page_size=page_size)
+    return PaginatedImportBatchesSchema(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=[
+            ImportBatchSummarySchema(
+                id=batch.id,
+                source_file=batch.source_file,
+                source_format=SourceFormatSchema(batch.source_format.value),
+                created_at=batch.created_at,
+                experiments_created=batch.experiments_created,
+                warnings=_batch_warnings(batch.warnings),
+            )
+            for batch in batches
+        ],
+    )
+
+
 @router.get("/experiments", response_model=PaginatedExperimentsSchema, tags=["experiments"])
 def list_experiments(
     strategy_name: Optional[str] = Query(None, description="Filter by strategy name (partial match)"),
@@ -258,6 +302,7 @@ def list_experiments(
     timeframe: Optional[str] = Query(None, description="Filter by normalized timeframe (e.g. H1)"),
     experiment_type: Optional[str] = Query(None, description="discovery | validation"),
     evaluation_status: Optional[str] = Query(None, description="QUALIFIED | REJECTED | INSUFFICIENT_DATA | PENDING"),
+    import_batch_id: Optional[int] = Query(None, ge=1, description="Filter by import batch ID"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(50, ge=1, le=500, description="Results per page"),
     db: Session = Depends(get_db),
@@ -289,6 +334,7 @@ def list_experiments(
         timeframe=timeframe,
         experiment_type=experiment_type,
         evaluation_status=evaluation_status,
+        import_batch_id=import_batch_id,
         page=page,
         page_size=page_size,
     )

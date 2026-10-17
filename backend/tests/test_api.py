@@ -199,6 +199,121 @@ class TestListExperimentsEndpoint:
         assert data["total"] == 0
         assert data["items"] == []
 
+    def test_list_filter_by_import_batch_id(self, client: TestClient, db_session):
+        from app.models.experiment import Experiment
+
+        first = client.post(
+            "/experiments/import",
+            files={"file": ("first.xlsx", io.BytesIO(make_xlsx_bytes(num_rows=3)),
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        ).json()
+        second = client.post(
+            "/experiments/import",
+            files={"file": ("second.xlsx", io.BytesIO(make_xlsx_bytes(num_rows=4)),
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        ).json()
+
+        response = client.get(
+            "/experiments",
+            params={"import_batch_id": first["import_batch_id"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 3
+        assert len(response.json()["items"]) == 3
+        expected_ids = {
+            item.id
+            for item in db_session.query(Experiment)
+            .filter(Experiment.import_batch_id == first["import_batch_id"])
+            .all()
+        }
+        assert {item["id"] for item in response.json()["items"]} == expected_ids
+        assert first["import_batch_id"] != second["import_batch_id"]
+
+    def test_import_batch_filter_invalid_values_rejected(self, client: TestClient):
+        for value in ("0", "-1", "not-an-id"):
+            response = client.get("/experiments", params={"import_batch_id": value})
+            assert response.status_code == 422
+
+    def test_import_batch_filter_does_not_change_unfiltered_response_shape(self, client: TestClient):
+        self._import_xlsx(client, num_rows=5)
+
+        response = client.get("/experiments")
+
+        assert response.status_code == 200
+        assert set(response.json()) == {"total", "page", "page_size", "items"}
+
+
+class TestImportBatchEndpoint:
+    def _import_xlsx(self, client, filename: str, num_rows: int):
+        response = client.post(
+            "/experiments/import",
+            files={"file": (filename, io.BytesIO(make_xlsx_bytes(num_rows=num_rows)),
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    def test_empty_import_batches(self, client: TestClient):
+        response = client.get("/import-batches")
+
+        assert response.status_code == 200
+        assert response.json() == {"total": 0, "page": 1, "page_size": 50, "items": []}
+
+    def test_batches_are_newest_first_with_parsed_warnings(self, client: TestClient):
+        first = self._import_xlsx(client, "first.xlsx", 2)
+        second = self._import_xlsx(client, "second.xlsx", 3)
+
+        response = client.get("/import-batches")
+        data = response.json()
+
+        assert response.status_code == 200
+        assert data["total"] == 2
+        assert [item["id"] for item in data["items"]] == [
+            second["import_batch_id"],
+            first["import_batch_id"],
+        ]
+        latest = data["items"][0]
+        assert set(latest) == {
+            "id", "source_file", "source_format", "created_at",
+            "experiments_created", "warnings",
+        }
+        assert latest["source_file"] == "second.xlsx"
+        assert latest["source_format"] == "xlsx"
+        assert latest["experiments_created"] == 3
+        assert isinstance(latest["warnings"], list)
+        assert latest["created_at"]
+
+    def test_batch_pagination(self, client: TestClient):
+        batches = [
+            self._import_xlsx(client, f"run-{rows}.xlsx", rows)
+            for rows in (1, 2, 3)
+        ]
+
+        first_page = client.get("/import-batches", params={"page": 1, "page_size": 2}).json()
+        second_page = client.get("/import-batches", params={"page": 2, "page_size": 2}).json()
+
+        assert first_page["total"] == 3
+        assert len(first_page["items"]) == 2
+        assert len(second_page["items"]) == 1
+        assert first_page["items"][0]["id"] == batches[2]["import_batch_id"]
+        assert second_page["items"][0]["id"] == batches[0]["import_batch_id"]
+
+    def test_invalid_batch_pagination_values_rejected(self, client: TestClient):
+        for params in ({"page": 0}, {"page": -1}, {"page_size": 0}, {"page_size": 501}):
+            response = client.get("/import-batches", params=params)
+            assert response.status_code == 422
+
+    def test_batch_list_response_is_backward_independent_of_experiment_listing(self, client: TestClient):
+        imported = self._import_xlsx(client, "history.xlsx", 2)
+
+        batch_response = client.get("/import-batches")
+        experiment_response = client.get("/experiments")
+
+        assert batch_response.status_code == experiment_response.status_code == 200
+        assert batch_response.json()["items"][0]["id"] == imported["import_batch_id"]
+        assert experiment_response.json()["total"] == 2
+
 
 class TestExperimentDetailEndpoint:
     def _import_and_get_first_id(self, client):

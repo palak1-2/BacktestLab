@@ -178,6 +178,22 @@ class PaginatedExperimentsSchema(BaseModel):
     items: List[ExperimentSummarySchema]
 
 
+class ImportBatchSummarySchema(BaseModel):
+    id: int
+    source_file: str
+    source_format: SourceFormatSchema
+    created_at: datetime
+    experiments_created: int
+    warnings: List[str] = Field(default_factory=list)
+
+
+class PaginatedImportBatchesSchema(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: List[ImportBatchSummarySchema]
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------

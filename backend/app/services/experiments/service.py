@@ -26,6 +26,7 @@ from app.models.experiment import (
     ImportBatch,
     SourceFormat,
 )
+
 from app.services.evaluation.evaluator import evaluate_experiment
 from app.services.ingestion.base import NormalizedExperimentBatch
 from app.services.metrics import finite_metric_value
@@ -39,6 +40,24 @@ def compute_file_hash(content: bytes) -> str:
 def is_duplicate(db: Session, source_hash: str) -> Optional[ImportBatch]:
     """Return existing ImportBatch if the file has already been imported."""
     return db.query(ImportBatch).filter(ImportBatch.source_hash == source_hash).first()
+
+
+def get_import_batches(
+    db: Session,
+    page: int = 1,
+    page_size: int = 50,
+) -> Tuple[int, List[ImportBatch]]:
+    """Return newest import batches with a bounded database-side page."""
+    query = db.query(ImportBatch)
+    total = query.count()
+    offset = (page - 1) * page_size
+    items = (
+        query.order_by(ImportBatch.created_at.desc(), ImportBatch.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+    return total, items
 
 
 def save_batch(
@@ -164,6 +183,7 @@ def get_experiments(
     timeframe: Optional[str] = None,
     experiment_type: Optional[str] = None,
     evaluation_status: Optional[str] = None,
+    import_batch_id: Optional[int] = None,
     page: int = 1,
     page_size: int = 50,
 ) -> Tuple[int, List[Experiment]]:
@@ -183,6 +203,8 @@ def get_experiments(
         q = q.filter(Experiment.experiment_type == ExperimentType(experiment_type))
     if evaluation_status:
         q = q.filter(Experiment.evaluation_status == EvaluationStatus(evaluation_status))
+    if import_batch_id is not None:
+        q = q.filter(Experiment.import_batch_id == import_batch_id)
 
     total = q.count()
     offset = (page - 1) * page_size
