@@ -122,7 +122,7 @@ export const BatchesPage: React.FC = () => {
             <Filter className="w-3.5 h-3.5 text-[#A6A8AB] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search dossiers by source filename..."
+              placeholder="Search batches by filename..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-[#1D2024] border border-[#35383C] rounded px-3 py-1.5 pl-8 text-xs text-[#E8E5DC] placeholder:text-[#A6A8AB]/70 focus:outline-none focus:border-[#D5A35D] font-mono"
